@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 type dailyAgg struct {
@@ -185,7 +185,7 @@ func handleTask(ctx context.Context, cfg Config, cg *CGClient, db *sql.DB, t Tas
 	}
 
 	if len(missing) > 0 {
-		WithFields(Fields{
+		log.WithFields(log.Fields{
 			"id":      t.CoinID,
 			"symbol":  t.Symbol,
 			"from":    formatDate(t.From),
