@@ -49,7 +49,7 @@ func LoadConfig() Config {
 		CHUser:     getenv("CLICKHOUSE_USER", "clickhouse"),
 		CHPassword: getenv("CLICKHOUSE_PASSWORD", "clickhouse"),
 		CHDatabase: getenv("CLICKHOUSE_DATABASE", "default"),
-		CHTable:    getenv("CLICKHOUSE_TABLE", "coingecko_market_chart_daily"),
+		CHTable:    getenv("CLICKHOUSE_TABLE", "coingecko_market_cap_daily"),
 
 		Workers:            mustInt(getenv("WORKERS", "8")),
 		EmptyStopBlocks:    mustInt(getenv("EMPTY_STOP_BLOCKS", "2")),
