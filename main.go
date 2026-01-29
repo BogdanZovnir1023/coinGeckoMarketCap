@@ -66,7 +66,6 @@ func main() {
 
 	activeCoins := activeCoinsAPI
 	if len(activeCoins) == 0 {
-
 		log.Warn("active coins list from API is empty; fallback to backfill-detected active coins")
 		activeCoins = coinFromIDMap(activeDetected)
 	}
@@ -95,7 +94,6 @@ func main() {
 }
 
 func fetchCoinsLists(ctx context.Context, cg *CGClient, cfg Config) (all []Coin, active []Coin) {
-
 	act, stA, bA, err := cg.CoinsList(ctx, "")
 	if err != nil {
 		log.WithField("status", stA).Warnf("coins/list active(default) failed: %v; body=%s", err, truncate(bA, 300))
@@ -212,19 +210,15 @@ func runIncrementalOnce(
 
 		case res := <-resultsCh:
 			inFlight--
+
 			if res.Err != "" {
 				log.WithFields(log.Fields{
 					"id":     res.Task.CoinID,
 					"symbol": res.Task.Symbol,
 					"from":   formatDate(res.Task.From),
 					"to":     formatDate(res.Task.To),
-				}).Warnf("incremental task error: %s", res.Err)
-
-				if res.Task.Retry < cfg.MaxRetriesPerBlock {
-					rt := res.Task
-					rt.Retry++
-					pending = append([]Task{rt}, pending...)
-				}
+					"retry":  res.Task.Retry,
+				}).Warnf("incremental task error (no requeue here): %s", res.Err)
 				continue
 			}
 
