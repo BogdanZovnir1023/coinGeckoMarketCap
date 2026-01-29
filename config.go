@@ -36,13 +36,13 @@ type Config struct {
 func LoadConfig() Config {
 	cfg := Config{
 		CGBaseURL:      getenv("COINGECKO_BASE_URL", "https://pro-api.coingecko.com/api/v3"),
-		CGAPIKey:       getenv("COINGECKO_API_KEY", "CG-etwb9d5Bz8FvbbLjboqWjV9Q"),
+		CGAPIKey:       getenv("COINGECKO_API_KEY", ""),
 		CGAPIKeyHeader: getenv("COINGECKO_API_KEY_HEADER", "x-cg-pro-api-key"),
 		VsCurrency:     getenv("COINGECKO_VS_CURRENCY", "usd"),
 		Interval:       getenv("COINGECKO_INTERVAL", "daily"),
 		RequestTimeout: mustDuration(getenv("COINGECKO_TIMEOUT", "30s")),
-		CGRPS:          mustFloat(getenv("COINGECKO_RPS", "2")),
-		CGBurst:        mustInt(getenv("COINGECKO_BURST", "4")),
+		CGRPS:          mustFloat(getenv("COINGECKO_RPS", "6")),  // подстрой под свой план.
+		CGBurst:        mustInt(getenv("COINGECKO_BURST", "12")), // подстрой под свой план
 
 		CHHost:     getenv("CLICKHOUSE_HOST", "localhost"),
 		CHPort:     getenv("CLICKHOUSE_PORT", "9000"),
@@ -53,8 +53,8 @@ func LoadConfig() Config {
 
 		Workers:            mustInt(getenv("WORKERS", "8")),
 		EmptyStopBlocks:    mustInt(getenv("EMPTY_STOP_BLOCKS", "2")),
-		MaxSearchBlocks:    mustInt(getenv("MAX_SEARCH_BLOCKS", "30")),
-		MaxRetriesPerBlock: mustInt(getenv("MAX_RETRIES_PER_BLOCK", "2")),
+		MaxSearchBlocks:    mustInt(getenv("MAX_SEARCH_BLOCKS", "30")), // NEW
+		MaxRetriesPerBlock: mustInt(getenv("MAX_RETRIES_PER_BLOCK", "3")),
 		SyncEvery:          mustDuration(getenv("SYNC_EVERY", "6h")),
 		LogLevel:           getenv("LOG_LEVEL", "info"),
 	}

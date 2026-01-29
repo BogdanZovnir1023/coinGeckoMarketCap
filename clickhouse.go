@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
@@ -31,86 +32,54 @@ type DailyPoint struct {
 	ID         string
 	Symbol     string
 	VsCurrency string
-	Timestamp  time.Time
+	Timestamp  time.Time // UTC
 	Price      float64
 	MarketCap  float64
 	Volume     float64
 }
 
+func chDSN(host, port, user, pass, db string) string {
+	u := &url.URL{
+		Scheme: "clickhouse",
+		User:   url.UserPassword(user, pass),
+		Host:   fmt.Sprintf("%s:%s", host, port),
+		Path:   "/" + db,
+	}
+	q := url.Values{}
+	q.Set("dial_timeout", "10s")
+	q.Set("read_timeout", "5m")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 func openClickHouse(ctx context.Context, cfg Config) (*sql.DB, error) {
-	// connect to default DB to create target DB (if needed)
-	admin, err := sql.Open("clickhouse", clickhouseDSN(cfg, "default"))
+	admin, err := sql.Open("clickhouse", chDSN(cfg.CHHost, cfg.CHPort, cfg.CHUser, cfg.CHPassword, "default"))
 	if err != nil {
 		return nil, err
 	}
-	admin.SetMaxOpenConns(10)
-	admin.SetMaxIdleConns(10)
+	admin.SetMaxOpenConns(4)
+	admin.SetMaxIdleConns(4)
 	admin.SetConnMaxLifetime(30 * time.Minute)
 
-	if err := admin.PingContext(ctx); err != nil {
+	if _, err := admin.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", cfg.CHDatabase)); err != nil {
 		_ = admin.Close()
 		return nil, err
 	}
-
-	if cfg.CHDatabase != "" && cfg.CHDatabase != "default" {
-		_, err = admin.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", cfg.CHDatabase))
-		if err != nil {
-			_ = admin.Close()
-			return nil, err
-		}
-	}
 	_ = admin.Close()
 
-	dbName := cfg.CHDatabase
-	if dbName == "" {
-		dbName = "default"
-	}
-
-	db, err := sql.Open("clickhouse", clickhouseDSN(cfg, dbName))
+	db, err := sql.Open("clickhouse", chDSN(cfg.CHHost, cfg.CHPort, cfg.CHUser, cfg.CHPassword, cfg.CHDatabase))
 	if err != nil {
 		return nil, err
 	}
-
-	db.SetMaxOpenConns(cfg.Workers + 5)
-	db.SetMaxIdleConns(cfg.Workers + 5)
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(16)
 	db.SetConnMaxLifetime(30 * time.Minute)
 
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-
 	return db, nil
-}
-
-func clickhouseDSN(cfg Config, database string) string {
-	host := cfg.CHHost
-	if host == "" {
-		host = "localhost"
-	}
-	port := cfg.CHPort
-	if port == "" {
-		port = "9000"
-	}
-	user := cfg.CHUser
-	if user == "" {
-		user = "default"
-	}
-
-	u := &url.URL{
-		Scheme: "clickhouse",
-		User:   url.UserPassword(user, cfg.CHPassword),
-		Host:   fmt.Sprintf("%s:%s", host, port),
-		Path:   "/" + database,
-	}
-
-	q := u.Query()
-	q.Set("compress", "lz4")
-	q.Set("dial_timeout", "10s")
-	q.Set("read_timeout", "30s")
-	u.RawQuery = q.Encode()
-
-	return u.String()
 }
 
 func createTable(ctx context.Context, db *sql.DB, table string) error {
@@ -118,58 +87,52 @@ func createTable(ctx context.Context, db *sql.DB, table string) error {
 	return err
 }
 
-func getMaxDate(ctx context.Context, db *sql.DB, table, coinID string) (time.Time, bool, error) {
-	var nt sql.NullTime
-	q := fmt.Sprintf("SELECT maxOrNull(_date) FROM %s WHERE id = ?", table)
-	if err := db.QueryRowContext(ctx, q, coinID).Scan(&nt); err != nil {
-		return time.Time{}, false, err
-	}
-	if !nt.Valid {
-		return time.Time{}, false, nil
-	}
-	t := time.Date(nt.Time.Year(), nt.Time.Month(), nt.Time.Day(), 0, 0, 0, 0, time.UTC)
-	return t, true, nil
-}
-
-func getMinDate(ctx context.Context, db *sql.DB, table, coinID string) (time.Time, bool, error) {
-	var nt sql.NullTime
-	q := fmt.Sprintf("SELECT minOrNull(_date) FROM %s WHERE id = ?", table)
-	if err := db.QueryRowContext(ctx, q, coinID).Scan(&nt); err != nil {
-		return time.Time{}, false, err
-	}
-	if !nt.Valid {
-		return time.Time{}, false, nil
-	}
-	t := time.Date(nt.Time.Year(), nt.Time.Month(), nt.Time.Day(), 0, 0, 0, 0, time.UTC)
-	return t, true, nil
-}
-
-func getExistingDays(ctx context.Context, db *sql.DB, table, coinID string, from, to time.Time) (map[string]struct{}, error) {
-	m := make(map[string]struct{})
-
+func getExistingDays(ctx context.Context, db *sql.DB, table, id string, from, to time.Time) (map[string]struct{}, error) {
 	q := fmt.Sprintf(`
-SELECT toString(_date)
+SELECT toString(_date) as d
 FROM %s
-WHERE id = ?
-  AND _date >= toDate(?)
-  AND _date <= toDate(?)
-GROUP BY _date
-`, table)
+WHERE id = ? AND _date BETWEEN toDate(?) AND toDate(?)
+GROUP BY d`, table)
 
-	rows, err := db.QueryContext(ctx, q, coinID, from, to)
+	rows, err := db.QueryContext(ctx, q, id, formatDate(from), formatDate(to))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	out := make(map[string]struct{})
 	for rows.Next() {
 		var d string
 		if err := rows.Scan(&d); err != nil {
 			return nil, err
 		}
-		m[d] = struct{}{}
+		out[d] = struct{}{}
 	}
-	return m, rows.Err()
+	return out, rows.Err()
+}
+
+func getMaxDate(ctx context.Context, db *sql.DB, table, id string) (time.Time, bool, error) {
+	q := fmt.Sprintf(`SELECT max(_date) FROM %s WHERE id = ?`, table)
+	var dt sql.NullTime
+	if err := db.QueryRowContext(ctx, q, id).Scan(&dt); err != nil {
+		return time.Time{}, false, err
+	}
+	if !dt.Valid {
+		return time.Time{}, false, nil
+	}
+	return dateOnlyUTC(dt.Time), true, nil
+}
+
+func getMinDate(ctx context.Context, db *sql.DB, table, id string) (time.Time, bool, error) {
+	q := fmt.Sprintf(`SELECT min(_date) FROM %s WHERE id = ?`, table)
+	var dt sql.NullTime
+	if err := db.QueryRowContext(ctx, q, id).Scan(&dt); err != nil {
+		return time.Time{}, false, err
+	}
+	if !dt.Valid {
+		return time.Time{}, false, nil
+	}
+	return dateOnlyUTC(dt.Time), true, nil
 }
 
 func insertDailyPoints(ctx context.Context, db *sql.DB, table string, pts []DailyPoint) (int, error) {
@@ -177,28 +140,30 @@ func insertDailyPoints(ctx context.Context, db *sql.DB, table string, pts []Dail
 		return 0, nil
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO ")
+	sb.WriteString(table)
+	sb.WriteString(" (id, symbol, vs_currency, timestamp, price, market_cap, volume) VALUES ")
 
-	stmt, err := tx.PrepareContext(ctx,
-		fmt.Sprintf("INSERT INTO %s (id, symbol, vs_currency, timestamp, price, market_cap, volume) VALUES (?, ?, ?, ?, ?, ?, ?)", table),
-	)
-	if err != nil {
-		return 0, err
-	}
-	defer stmt.Close()
-
-	for _, p := range pts {
-		_, err := stmt.ExecContext(ctx, p.ID, p.Symbol, p.VsCurrency, p.Timestamp, p.Price, p.MarketCap, p.Volume)
-		if err != nil {
-			return 0, err
+	args := make([]any, 0, len(pts)*7)
+	for i, p := range pts {
+		if i > 0 {
+			sb.WriteString(",")
 		}
+		sb.WriteString("(?, ?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			p.ID,
+			p.Symbol,
+			p.VsCurrency,
+			p.Timestamp.UTC(),
+			p.Price,
+			p.MarketCap,
+			p.Volume,
+		)
 	}
 
-	if err := tx.Commit(); err != nil {
+	_, err := db.ExecContext(ctx, sb.String(), args...)
+	if err != nil {
 		return 0, err
 	}
 	return len(pts), nil
